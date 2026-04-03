@@ -5,6 +5,7 @@ import re
 import string
 from collections import Counter
 import os
+import glob
 from sklearn.feature_extraction.text import TfidfVectorizer
 
 def preprocess_text(text):
@@ -31,9 +32,10 @@ def preprocess_text(text):
     tokens = text.split()
     return tokens
 
-def build_vocab(tokenized_texts, min_freq=2):
+def build_vocab(tokenized_texts, min_freq=5):
     """
     KDD Transformation : Construction du vocabulaire.
+    - min_freq=5 pour filtrer les mots rares sur un gros dataset.
     """
     counter = Counter()
     for tokens in tokenized_texts:
@@ -45,7 +47,7 @@ def build_vocab(tokenized_texts, min_freq=2):
             vocab[word] = len(vocab)
     return vocab
 
-def texts_to_sequences(tokenized_texts, vocab, max_len=100):
+def texts_to_sequences(tokenized_texts, vocab, max_len=200):
     """
     KDD Transformation : Conversion en séquences d'entiers avec padding.
     """
@@ -59,54 +61,76 @@ def texts_to_sequences(tokenized_texts, vocab, max_len=100):
 
 def load_fakenewsnet_data(data_dir="data/raw"):
     """
-    KDD Sélection : Chargement et fusion des fichiers FakeNewsNet.
-    Label 1 pour 'fake', 0 pour 'real'.
+    KDD Sélection : Chargement dynamique de tous les fichiers CSV.
+    Détection automatique des colonnes de texte, de titre et de labels.
     """
-    files = {
-        "BuzzFeed_fake_news_content.csv": 1,
-        "BuzzFeed_real_news_content.csv": 0,
-        "PolitiFact_fake_news_content.csv": 1,
-        "PolitiFact_real_news_content.csv": 0
-    }
-    
-    dfs = []
-    for filename, label in files.items():
-        path = os.path.join(data_dir, filename)
-        if os.path.exists(path):
-            df = pd.read_csv(path)
-            df['label'] = label
-            dfs.append(df[['title', 'text', 'label']])
-        else:
-            print(f"Attention : Fichier {path} non trouvé.")
-            
-    if not dfs:
+    csv_files = glob.glob(os.path.join(data_dir, "*.csv"))
+    if not csv_files:
         raise FileNotFoundError(f"Aucun fichier CSV trouvé dans {data_dir}")
         
+    print(f"Chargement de {len(csv_files)} fichiers CSV...")
+    
+    dfs = []
+    for path in csv_files:
+        filename = os.path.basename(path).lower()
+        df = pd.read_csv(path)
+        
+        # 1. Détection dynamique du texte et du titre
+        text_cols = ['text', 'body_text', 'content']
+        title_cols = ['title', 'headline']
+        
+        found_text_col = next((c for c in text_cols if c in df.columns), None)
+        found_title_col = next((c for c in title_cols if c in df.columns), None)
+        
+        if not found_text_col and not found_title_col:
+            print(f"Saut du fichier {filename} : aucune colonne de texte/titre trouvée.")
+            continue
+            
+        # Fusion du contenu
+        text_data = df[found_text_col].fillna('') if found_text_col else ""
+        title_data = df[found_title_col].fillna('') if found_title_col else ""
+        df['final_content'] = text_data.astype(str) + " " + title_data.astype(str)
+        
+        # 2. Détection dynamique du Label
+        label_cols = ['label', 'class', 'type']
+        found_label_col = next((c for c in label_cols if c in df.columns), None)
+        
+        if found_label_col:
+            # On s'assure que c'est numérique (0/1)
+            # Certains datasets utilisent 'fake'/'real' ou '0'/'1'
+            labels = df[found_label_col].astype(str).str.lower()
+            df['final_label'] = labels.apply(lambda x: 1 if 'fake' in x or '1' in x or 'unreliable' in x else 0)
+        else:
+            # Fallback : déduction via le nom du fichier
+            label_val = 1 if 'fake' in filename else 0
+            df['final_label'] = label_val
+            
+        dfs.append(df[['final_content', 'final_label']])
+            
+    if not dfs:
+        raise ValueError("Aucune donnée valide n'a pu être extraite des fichiers CSV.")
+        
     full_df = pd.concat(dfs, ignore_index=True)
-    # On fusionne le titre et le texte pour avoir plus de contexte
-    full_df['content'] = full_df['text'].fillna('') + " " + full_df['title'].fillna('')
+    full_df.columns = ['content', 'label']
+    print(f"Total des échantillons chargés : {len(full_df)}")
     return full_df
 
-def get_dataloaders(data_dir='data/raw', batch_size=32, max_len=100):
+def get_dataloaders(data_dir='data/raw', batch_size=32, max_len=200):
     """
-    Pipeline KDD complet pour obtenir les DataLoaders (Séquences pour CNN).
+    Pipeline KDD pour Séquences (CNN). Adapté aux gros datasets.
     """
-    # 1. Sélection
     df = load_fakenewsnet_data(data_dir)
     
-    # 2. Prétraitement
     print("KDD Prétraitement : Nettoyage et tokenisation...")
     tokenized_texts = [preprocess_text(t) for t in df['content']]
     
-    # 3. Transformation
-    print("KDD Transformation : Vectorisation et Padding...")
-    vocab = build_vocab(tokenized_texts)
+    print("KDD Transformation : Vocabulaire (min_freq=5)...")
+    vocab = build_vocab(tokenized_texts, min_freq=5)
     vocab_size = len(vocab)
     
     X = texts_to_sequences(tokenized_texts, vocab, max_len=max_len)
     y = torch.tensor(df['label'].values)
     
-    # 4. Création des datasets
     dataset = TensorDataset(X, y)
     
     total = len(dataset)
@@ -119,29 +143,24 @@ def get_dataloaders(data_dir='data/raw', batch_size=32, max_len=100):
         generator=torch.Generator().manual_seed(42)
     )
     
-    # 5. DataLoaders
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size)
-    test_loader = DataLoader(test_ds, batch_size=batch_size)
-    
-    return train_loader, val_loader, test_loader, vocab_size
+    return (DataLoader(train_ds, batch_size=batch_size, shuffle=True),
+            DataLoader(val_ds, batch_size=batch_size),
+            DataLoader(test_loader := DataLoader(test_ds, batch_size=batch_size)), 
+            vocab_size)
 
-def get_tfidf_dataloaders(data_dir='data/raw', batch_size=32, max_features=5000):
+def get_tfidf_dataloaders(data_dir='data/raw', batch_size=32, max_features=1000):
     """
-    Pipeline KDD avec vectorisation TF-IDF (pour MLP).
+    Pipeline KDD TF-IDF (MLP). Adapté aux gros datasets.
     """
-    # 1. Sélection
     df = load_fakenewsnet_data(data_dir)
     
-    # 2 & 3. Prétraitement & Transformation (TF-IDF)
-    print(f"KDD Transformation : TF-IDF Vectorization (max_features={max_features})...")
+    print(f"KDD Transformation : TF-IDF (max_features={max_features})...")
     vectorizer = TfidfVectorizer(max_features=max_features, stop_words='english')
     X_tfidf = vectorizer.fit_transform(df['content'])
     
     X = torch.tensor(X_tfidf.toarray(), dtype=torch.float32)
     y = torch.tensor(df['label'].values)
     
-    # 4. Création des datasets
     dataset = TensorDataset(X, y)
     
     total = len(dataset)
@@ -154,22 +173,15 @@ def get_tfidf_dataloaders(data_dir='data/raw', batch_size=32, max_features=5000)
         generator=torch.Generator().manual_seed(42)
     )
     
-    # 5. DataLoaders
-    train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=batch_size)
-    test_loader = DataLoader(test_ds, batch_size=batch_size)
-    
-    return train_loader, val_loader, test_loader, max_features
+    return (DataLoader(train_ds, batch_size=batch_size, shuffle=True),
+            DataLoader(val_ds, batch_size=batch_size),
+            DataLoader(test_ds, batch_size=batch_size),
+            max_features)
 
 if __name__ == "__main__":
-    # EXÉCUTION : Résumé des données pour validation
     try:
-        print("Test Séquences (CNN):")
         train_l, val_l, test_l, v_size = get_dataloaders()
-        print(f"Vocab size: {v_size}, Train batches: {len(train_l)}")
-        
-        print("\nTest TF-IDF (MLP):")
-        train_l_tfidf, val_l_tfidf, test_l_tfidf, feat_size = get_tfidf_dataloaders()
-        print(f"Features size: {feat_size}, Train batches: {len(train_l_tfidf)}")
+        print(f"\nSuccès : {v_size} mots uniques (freq >= 5).")
+        print(f"Nombre total de batchs (train): {len(train_l)}")
     except Exception as e:
-        print(f"Erreur lors du chargement : {e}")
+        print(f"Erreur : {e}")
