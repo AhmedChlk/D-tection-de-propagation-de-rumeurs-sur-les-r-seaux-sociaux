@@ -27,10 +27,9 @@ class BaselineCNN(nn.Module):
             for fs in filter_sizes
         ])
         
-        # Couche dense finale
+        # Couche dense finale (retourne les logits)
         self.fc = nn.Linear(len(filter_sizes) * n_filters, 1)
         self.dropout = nn.Dropout(dropout)
-        self.sigmoid = nn.Sigmoid()
         
         # Initialisation de He (Kaiming)
         self._initialize_weights()
@@ -60,7 +59,7 @@ class BaselineCNN(nn.Module):
         cat = self.dropout(torch.cat(pooled, dim=1))
         # cat: [batch size, n_filters * len(filter_sizes)]
             
-        return self.sigmoid(self.fc(cat))
+        return self.fc(cat)
 
 if __name__ == "__main__":
     # Test rapide

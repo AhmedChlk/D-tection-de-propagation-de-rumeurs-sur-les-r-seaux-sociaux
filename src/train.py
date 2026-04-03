@@ -7,6 +7,7 @@ import os
 from torch.utils.data import DataLoader, TensorDataset, random_split
 from src.models.baseline_mlp import BaselineMLP
 from src.models.baseline_cnn import BaselineCNN
+from src.data.prepare_data import get_dataloaders
 
 class EarlyStopping:
     """
@@ -43,8 +44,8 @@ class EarlyStopping:
         torch.save(model.state_dict(), path)
 
 def calculate_accuracy(y_pred, y_true):
-    """Calcul de la précision pour la classification binaire."""
-    preds = y_pred > 0.5
+    """Calcul de la précision pour la classification binaire avec logits."""
+    preds = torch.sigmoid(y_pred) > 0.5
     correct = (preds == y_true).float().sum()
     return correct / y_true.shape[0]
 
@@ -128,34 +129,22 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Appareil utilisé : {device}")
 
-    # GÉNÉRATION DE DONNÉES DE DÉMONSTRATION (Phase Transformation en attente)
-    # Ces données simulent la sortie de la phase 3 (Transformation)
+    # CHARGEMENT DES VRAIES DONNÉES
+    # max_len fixé à 100 pour CNN, et input_size pour MLP sera max_len également si on l'utilise tel quel
+    max_len = 100
+    train_loader, val_loader, test_loader, vocab_size = get_dataloaders(batch_size=args.batch_size, max_len=max_len)
+
     if args.model == "mlp":
-        input_size = 1000 # Exemple : TF-IDF ou vecteurs de caractéristiques
-        model = BaselineMLP(input_size=input_size).to(device)
-        X = torch.randn(200, input_size)
-        y = torch.randint(0, 2, (200,))
+        # Pour le MLP, on utilise max_len comme taille d'entrée (vecteur de séquences d'indices)
+        # Note: Un MLP sur des indices n'est pas idéal, mais respecte la structure actuelle
+        model = BaselineMLP(input_size=max_len).to(device)
     else:
-        vocab_size = 5000
-        seq_len = 50
         model = BaselineCNN(vocab_size=vocab_size).to(device)
-        X = torch.randint(0, vocab_size, (200, seq_len))
-        y = torch.randint(0, 2, (200,))
-
-    dataset = TensorDataset(X, y)
-    
-    # Séparation Train/Val pour tester l'Early Stopping
-    train_size = int(0.8 * len(dataset))
-    val_size = len(dataset) - train_size
-    train_ds, val_ds = random_split(dataset, [train_size, val_size])
-
-    train_loader = DataLoader(train_ds, batch_size=args.batch_size, shuffle=True)
-    val_loader = DataLoader(val_ds, batch_size=args.batch_size)
 
     # CONFIGURATION OPTIMISEUR ET PERTE
-    # Directive : Adam et Entropie Croisée Binaire (BCELoss car Sigmoïde en sortie de modèle)
+    # Directive : Adam et BCEWithLogitsLoss pour une meilleure stabilité numérique
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-    criterion = nn.BCELoss()
+    criterion = nn.BCEWithLogitsLoss()
 
     print(f"Démarrage de l'entraînement : {args.model.upper()}")
     train_model(

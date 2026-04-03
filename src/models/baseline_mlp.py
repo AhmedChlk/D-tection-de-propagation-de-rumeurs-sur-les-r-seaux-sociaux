@@ -31,10 +31,9 @@ class BaselineMLP(nn.Module):
             
             in_features = h_size
             
-        # Couche de sortie pour classification binaire
+        # Couche de sortie pour classification binaire (logits)
         self.hidden_layers = nn.Sequential(*layers)
         self.output_layer = nn.Linear(in_features, 1)
-        self.sigmoid = nn.Sigmoid()
         
         # Initialisation explicite de He (Kaiming)
         self._initialize_weights()
@@ -53,10 +52,10 @@ class BaselineMLP(nn.Module):
     def forward(self, x):
         """
         Passage vers l'avant (forward pass).
+        Retourne les logits bruts.
         """
         x = self.hidden_layers(x)
         x = self.output_layer(x)
-        x = self.sigmoid(x)
         return x
 
 if __name__ == "__main__":
