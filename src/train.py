@@ -120,7 +120,7 @@ def main():
     parser.add_argument("--model", type=str, choices=["mlp", "cnn"], default="mlp", help="Modèle à entraîner.")
     parser.add_argument("--epochs", type=int, default=50, help="Nombre maximal d'époques.")
     parser.add_argument("--batch_size", type=int, default=32, help="Taille des lots.")
-    parser.add_argument("--lr", type=float, default=0.001, help="Taux d'apprentissage initial (Adam).")
+    parser.add_argument("--lr", type=float, default=0.0005, help="Taux d'apprentissage initial (Adam).")
     parser.add_argument("--patience", type=int, default=5, help="Patience pour l'Early Stopping.")
     parser.add_argument("--clip", type=float, default=2.0, help="Seuil d'écrêtage du gradient.")
     parser.add_argument("--dry-run", action="store_true", help="Mode test : une seule époque, un seul batch.")
@@ -142,7 +142,7 @@ def main():
 
     # CONFIGURATION OPTIMISEUR ET PERTE
     # Directive : Adam et BCEWithLogitsLoss pour une meilleure stabilité numérique
-    optimizer = optim.Adam(model.parameters(), lr=args.lr)
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
     criterion = nn.BCEWithLogitsLoss()
 
     print(f"Démarrage de l'entraînement : {args.model.upper()}")

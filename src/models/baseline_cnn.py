@@ -12,7 +12,7 @@ class BaselineCNN(nn.Module):
     - Dropout pour la régularisation.
     - Classification binaire avec Logits.
     """
-    def __init__(self, vocab_size, embedding_dim=128, n_filters=100, filter_sizes=[3, 4, 5], dropout=0.5):
+    def __init__(self, vocab_size, embedding_dim=50, n_filters=20, filter_sizes=[3, 4, 5], dropout=0.6):
         super(BaselineCNN, self).__init__()
         
         self.embedding = nn.Embedding(vocab_size, embedding_dim)
