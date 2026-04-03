@@ -10,7 +10,7 @@ class BaselineCNN(nn.Module):
     - Initialisation de He (Kaiming) pour ReLU.
     - Batch Normalization pour la stabilisation.
     - Dropout pour la régularisation.
-    - Classification binaire avec Sigmoïde.
+    - Classification binaire avec Logits.
     """
     def __init__(self, vocab_size, embedding_dim=128, n_filters=100, filter_sizes=[3, 4, 5], dropout=0.5):
         super(BaselineCNN, self).__init__()

@@ -7,7 +7,7 @@ class BaselineMLP(nn.Module):
     
     Architecture :
     - Couches cachées en "entonnoir" (nombre de neurones décroissant).
-    - Activation : ReLU (cachées), Sigmoïde (sortie).
+    - Activation : ReLU (cachées), Logits (sortie).
     - Stabilisation : Batch Normalization.
     - Régularisation : Dropout (p=0.5).
     - Initialisation : He (Kaiming).

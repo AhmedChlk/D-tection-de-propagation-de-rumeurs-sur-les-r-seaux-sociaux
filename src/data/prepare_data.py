@@ -8,27 +8,36 @@ import os
 
 def preprocess_text(text):
     """
-    Nettoyage de base : minuscules, retrait de ponctuation, et tokenisation simple.
+    KDD Prétraitement : Nettoyage du texte.
+    - Minuscules
+    - Suppression des URLs
+    - Suppression de la ponctuation
+    - Tokenisation simple
     """
     if not isinstance(text, str):
         return []
+    
+    # Passage en minuscules
     text = text.lower()
-    # Retrait de la ponctuation
+    
+    # Suppression des URLs
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+    
+    # Suppression de la ponctuation
     text = re.sub(f'[{re.escape(string.punctuation)}]', '', text)
+    
     # Tokenisation par espace
     tokens = text.split()
     return tokens
 
 def build_vocab(tokenized_texts, min_freq=2):
     """
-    Construit un dictionnaire mot -> index.
-    0 est réservé au padding, 1 aux mots inconnus (OOV).
+    KDD Transformation : Construction du vocabulaire.
     """
     counter = Counter()
     for tokens in tokenized_texts:
         counter.update(tokens)
     
-    # Filtrage par fréquence
     vocab = {"<PAD>": 0, "<UNK>": 1}
     for word, freq in counter.items():
         if freq >= min_freq:
@@ -37,22 +46,20 @@ def build_vocab(tokenized_texts, min_freq=2):
 
 def texts_to_sequences(tokenized_texts, vocab, max_len=100):
     """
-    Transforme les tokens en séquences d'entiers avec padding/tronquage.
+    KDD Transformation : Conversion en séquences d'entiers avec padding.
     """
     sequences = []
     for tokens in tokenized_texts:
         seq = [vocab.get(token, vocab["<UNK>"]) for token in tokens]
-        # Tronquage
-        seq = seq[:max_len]
-        # Padding
-        seq += [vocab["<PAD>"]] * (max_len - len(seq))
+        seq = seq[:max_len] # Tronquage
+        seq += [vocab["<PAD>"]] * (max_len - len(seq)) # Padding
         sequences.append(seq)
     return torch.tensor(sequences)
 
 def load_fakenewsnet_data(data_dir="data/raw"):
     """
-    Charge et concatène les fichiers BuzzFeed et PolitiFact.
-    Label 0 pour 'real', 1 pour 'fake'.
+    KDD Sélection : Chargement et fusion des fichiers FakeNewsNet.
+    Label 1 pour 'fake', 0 pour 'real'.
     """
     files = {
         "BuzzFeed_fake_news_content.csv": 1,
@@ -67,34 +74,33 @@ def load_fakenewsnet_data(data_dir="data/raw"):
         if os.path.exists(path):
             df = pd.read_csv(path)
             df['label'] = label
-            # On garde le titre et le texte pour la fusion ou le choix
             dfs.append(df[['title', 'text', 'label']])
         else:
             print(f"Attention : Fichier {path} non trouvé.")
             
     if not dfs:
-        raise FileNotFoundError("Aucun fichier CSV trouvé dans data/raw/")
+        raise FileNotFoundError(f"Aucun fichier CSV trouvé dans {data_dir}")
         
     full_df = pd.concat(dfs, ignore_index=True)
-    # On privilégie 'text', si vide on prend 'title'
+    # On fusionne le titre et le texte pour avoir plus de contexte
     full_df['content'] = full_df['text'].fillna('') + " " + full_df['title'].fillna('')
     return full_df
 
-def get_dataloaders(batch_size=32, max_len=100, train_split=0.7, val_split=0.15):
+def get_dataloaders(data_dir='data/raw', batch_size=32, max_len=100):
     """
-    Pipeline complet pour obtenir les DataLoaders de PyTorch.
+    Pipeline KDD complet pour obtenir les DataLoaders.
     """
-    # 1. Chargement
-    df = load_fakenewsnet_data()
+    # 1. Sélection
+    df = load_fakenewsnet_data(data_dir)
     
     # 2. Prétraitement
-    print("Prétraitement des textes...")
+    print("KDD Prétraitement : Nettoyage et tokenisation...")
     tokenized_texts = [preprocess_text(t) for t in df['content']]
     
-    # 3. Vocabulaire et séquençage
+    # 3. Transformation
+    print("KDD Transformation : Vectorisation et Padding...")
     vocab = build_vocab(tokenized_texts)
     vocab_size = len(vocab)
-    print(f"Taille du vocabulaire : {vocab_size}")
     
     X = texts_to_sequences(tokenized_texts, vocab, max_len=max_len)
     y = torch.tensor(df['label'].values)
@@ -103,8 +109,8 @@ def get_dataloaders(batch_size=32, max_len=100, train_split=0.7, val_split=0.15)
     dataset = TensorDataset(X, y)
     
     total = len(dataset)
-    train_size = int(train_split * total)
-    val_size = int(val_split * total)
+    train_size = int(0.7 * total)
+    val_size = int(0.15 * total)
     test_size = total - train_size - val_size
     
     train_ds, val_ds, test_ds = random_split(
@@ -120,9 +126,16 @@ def get_dataloaders(batch_size=32, max_len=100, train_split=0.7, val_split=0.15)
     return train_loader, val_loader, test_loader, vocab_size
 
 if __name__ == "__main__":
-    # Test rapide
-    train_l, val_l, test_l, v_size = get_dataloaders()
-    print(f"Train batches: {len(train_l)}")
-    print(f"Val batches: {len(val_l)}")
-    print(f"Test batches: {len(test_l)}")
-    print(f"Vocab size: {v_size}")
+    # EXÉCUTION : Résumé des données pour validation
+    try:
+        train_l, val_l, test_l, v_size = get_dataloaders()
+        print("\n" + "="*30)
+        print("RÉSUMÉ DES DONNÉES (KDD)")
+        print("="*30)
+        print(f"Taille du vocabulaire : {v_size}")
+        print(f"Nombre de batchs (Train): {len(train_l)}")
+        print(f"Nombre de batchs (Val)  : {len(val_l)}")
+        print(f"Nombre de batchs (Test) : {len(test_l)}")
+        print("="*30)
+    except Exception as e:
+        print(f"Erreur lors du chargement : {e}")

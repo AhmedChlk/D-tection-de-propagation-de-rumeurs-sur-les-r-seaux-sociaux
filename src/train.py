@@ -129,8 +129,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Appareil utilisé : {device}")
 
-    # CHARGEMENT DES VRAIES DONNÉES
-    # max_len fixé à 100 pour CNN, et input_size pour MLP sera max_len également si on l'utilise tel quel
+    # CHARGEMENT DES DONNÉES VIA PIPELINE KDD
     max_len = 100
     train_loader, val_loader, test_loader, vocab_size = get_dataloaders(batch_size=args.batch_size, max_len=max_len)
 
