@@ -1,112 +1,104 @@
+"""
+main.py — Projet M1 : Rumor Detection on Social Networks (Twitter15/16)
+"""
 import argparse
 import torch
 import torch.nn as nn
 import torch.optim as optim
 import os
-import sys
+import random
+import numpy as np
+from sklearn.metrics import f1_score, classification_report
 
-# Ajout du dossier courant au path pour les imports
-sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from src.data_loader import get_cnn_dataloaders, get_bert_dataloaders
+from src.models import TextCNN, DistilBERTFineTuned
+from src.trainer import train_model
 
-from src.data.prepare_data import get_dataloaders, load_fakenewsnet_data
-from src.train import train_model
-from src.evaluate import evaluate_model
-from src.models.baseline_cnn import BaselineCNN
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+DATA_DIR = "data/kaggle/Rumor-Detection-Dataset" 
+TARGET_NAMES = ['Non-Rumor', 'False', 'True', 'Unverified']
+
+def set_seed(seed=42):
+    """Fixe la graine aléatoire pour garantir la reproductibilité des résultats (Critère académique)."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+def evaluate(model, test_loader, device, save_path, is_bert=False):
+    model.load_state_dict(torch.load(save_path, map_location=device))
+    model.eval()
+    all_preds, all_labels = [], []
+    with torch.no_grad():
+        for batch in test_loader:
+            if is_bert:
+                inputs = {'input_ids': batch['input_ids'].to(device), 'attention_mask': batch['attention_mask'].to(device)}
+                labels = batch['labels'].to(device)
+                out = model(**inputs)
+            else:
+                X, labels = batch[0].to(device), batch[1].to(device)
+                out = model(X)
+                
+            all_preds.extend(out.argmax(dim=1).cpu().tolist())
+            all_labels.extend(labels.cpu().tolist())
+
+    acc = np.mean(np.array(all_preds) == np.array(all_labels))
+    f1  = f1_score(all_labels, all_preds, average='macro', zero_division=0)
+    print("\n" + classification_report(all_labels, all_preds, target_names=TARGET_NAMES))
+    return acc, f1
+
+def run_cnn(device):
+    print("\n" + "═" * 60 + "\n  MODÈLE : TextCNN (Twitter15/16)\n" + "═" * 60)
+    train_loader, val_loader, test_loader, vocab_size = get_cnn_dataloaders(DATA_DIR, batch_size=32)
+    
+    model = TextCNN(vocab_size=vocab_size, num_classes=4).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=1e-3)
+    criterion = nn.CrossEntropyLoss()
+    
+    save_path = "best_cnn.pt"
+    train_model(model, train_loader, val_loader, optimizer, criterion, device, 
+                epochs=20, patience=5, is_bert=False, save_path=save_path)
+                
+    acc, f1 = evaluate(model, test_loader, device, save_path, is_bert=False)
+    print(f"\n{'═'*60}\n  RÉSULTATS CNN | Acc: {acc*100:.2f}% | F1: {f1:.4f}\n{'═'*60}")
+    return acc
+
+def run_bert(device):
+    print("\n" + "═" * 60 + "\n  MODÈLE : DistilBERT Fine-Tuned (Twitter15/16)\n" + "═" * 60)
+    train_loader, val_loader, test_loader = get_bert_dataloaders(DATA_DIR, batch_size=16)
+    
+    model = DistilBERTFineTuned(num_classes=4).to(device)
+    optimizer = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=3e-5)
+    criterion = nn.CrossEntropyLoss()
+    
+    save_path = "best_bert.pt"
+    train_model(model, train_loader, val_loader, optimizer, criterion, device, 
+                epochs=10, patience=3, is_bert=True, save_path=save_path)
+                
+    acc, f1 = evaluate(model, test_loader, device, save_path, is_bert=True)
+    print(f"\n{'═'*60}\n  RÉSULTATS BERT | Acc: {acc*100:.2f}% | F1: {f1:.4f}\n{'═'*60}")
+    return acc
 
 def main():
-    parser = argparse.ArgumentParser(description="Pipeline Deep Learning : Détection de Rumeurs (CNN sur Dataset Massif)")
-    parser.add_argument("--epochs", type=int, default=20, help="Nombre d'époques d'entraînement.")
-    parser.add_argument("--batch_size", type=int, default=64, help="Taille des lots (augmentée pour gros dataset).")
-    parser.add_argument("--lr", type=float, default=0.001, help="Taux d'apprentissage (Adam).")
-    parser.add_argument("--patience", type=int, default=5, help="Patience pour l'Early Stopping.")
-    parser.add_argument("--dry-run", action="store_true", help="Mode test rapide (1 époque, 1 batch).")
+    # 1. Reproductibilité
+    set_seed(42)
+    
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--model', type=str, default='all', choices=['cnn', 'bert', 'all'])
     args = parser.parse_args()
-
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"\n[INFO] Appareil utilisé : {device}")
-    model_path = "best_model.pt"
-
-    # --- ÉTAPE 1 & 2 : SÉLECTION & PRÉTRAITEMENT ---
-    print("\n--- ÉTAPE KDD 1 & 2 : Préparation des données (Séquences) ---")
-    max_len = 200 
-    train_loader, val_loader, test_loader, vocab_size = get_dataloaders(
-        batch_size=args.batch_size, 
-        max_len=max_len
-    )
-
-    # --- ÉTAPE 3 : TRANSFORMATION (Initialisation Modèle CNN) ---
-    print(f"\n--- ÉTAPE KDD 3 : Initialisation du modèle CNN (Vocab size: {vocab_size}) ---")
-    model = BaselineCNN(
-        vocab_size=vocab_size, 
-        embedding_dim=100, 
-        n_filters=50,
-        dropout=0.5
-    ).to(device)
-
-    # Régularisation modérée (1e-4) adaptée à un volume de données important
-    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-4)
-    criterion = nn.BCEWithLogitsLoss()
-
-    # --- ÉTAPE 4 : DATA MINING (Entraînement) ---
-    print("\n--- ÉTAPE KDD 4 : Data Mining (Entraînement) ---")
-    train_model(
-        model=model,
-        train_loader=train_loader,
-        val_loader=val_loader,
-        criterion=criterion,
-        optimizer=optimizer,
-        device=device,
-        epochs=args.epochs,
-        patience=args.patience,
-        clip_value=2.0,
-        dry_run=args.dry_run
-    )
-
-    # --- ÉTAPE 5 : INTERPRÉTATION & ÉVALUATION ---
-    print("\n--- ÉTAPE KDD 5 : Interprétation & Évaluation finale ---")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
-    if os.path.exists(model_path):
-        model.load_state_dict(torch.load(model_path, map_location=device))
-        print(f"[INFO] Meilleur modèle chargé depuis {model_path}")
-    
-    y_pred, y_true, errors = evaluate_model(model, test_loader, device)
-    
-    # Calcul des métriques
-    acc = accuracy_score(y_true, y_pred)
-    prec = precision_score(y_true, y_pred)
-    rec = recall_score(y_true, y_pred)
-    f1 = f1_score(y_true, y_pred)
-    cm = confusion_matrix(y_true, y_pred)
-    
-    print("\n" + "="*40)
-    print("BILAN FINAL DU PROJET (DATASET MASSIF)")
-    print("="*40)
-    print(f"Accuracy   : {acc:.4f}")
-    print(f"Précision  : {prec:.4f}")
-    print(f"Rappel     : {rec:.4f}")
-    print(f"F1-Score   : {f1:.4f}")
-    print("\nMatrice de Confusion :")
-    print(cm)
-    print("="*40)
+    if not os.path.exists(DATA_DIR):
+        print(f"\n[ERREUR] Dossier {DATA_DIR} introuvable.")
+        return
 
-    # Analyse qualitative
-    print("\n--- Analyse qualitative des erreurs ---")
-    df = load_fakenewsnet_data()
-    test_indices = test_loader.dataset.indices
-    
-    fp_found, fn_found = False, False
-    for err in errors:
-        content = df.iloc[test_indices[err['test_idx']]]['content']
-        if not fp_found and err['pred'] == 1 and err['label'] == 0:
-            print(f"\n[FAUX POSITIF] :\nTexte : {content[:400]}...")
-            fp_found = True
-        if not fn_found and err['pred'] == 0 and err['label'] == 1:
-            print(f"\n[FAUX NÉGATIF] :\nTexte : {content[:400]}...")
-            fn_found = True
-        if fp_found and fn_found: break
+    if args.model == 'all':
+        run_cnn(device)
+        run_bert(device)
+    elif args.model == 'cnn':
+        run_cnn(device)
+    elif args.model == 'bert':
+        run_bert(device)
 
-    print("\n[SUCCÈS] Pipeline CNN terminé.")
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
